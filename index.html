@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hand Tracking and Video Recording</title>
+
+    <!-- MediaPipe Libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            background: #f0f4f8;
+            margin: 0;
+            padding: 20px;
+        }
+
+        h1 {
+            color: #243b55;
+        }
+
+        .container {
+            max-width: 750px;
+            margin: auto;
+            background: white;
+            padding: 20px;
+            border-radius: 15px;
+            box-shadow: 0 4px 12px #cccccc;
+        }
+
+        .video-container {
+            position: relative;
+            width: 100%;
+            max-width: 640px;
+            margin: 20px auto;
+        }
+
+        video, canvas {
+            width: 100%;
+            border-radius: 10px;
+        }
+
+        video {
+            display: none;
+        }
+
+        canvas {
+            background: #222;
+        }
+
+        button {
+            padding: 12px 18px;
+            margin: 8px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            color: white;
+        }
+
+        #startCamera {
+            background: #1976d2;
+        }
+
+        #startRecording {
+            background: #e53935;
+        }
+
+        #stopRecording {
+            background: #424242;
+        }
+
+        button:disabled {
+            background: #999;
+            cursor: not-allowed;
+        }
+
+        #status {
+            font-weight: bold;
+            color: #333;
+            margin: 15px;
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="container">
+
+    <h1>✋ Hand Tracking System</h1>
+    <p>Track your hand movements and record the video.</p>
+
+    <div class="video-container">
+        <video id="inputVideo" autoplay playsinline></video>
+        <canvas id="outputCanvas" width="640" height="480"></canvas>
+    </div>
+
+    <div>
+        <button id="startCamera">Start Camera</button>
+        <button id="startRecording" disabled>🔴 Start Recording</button>
+        <button id="stopRecording" disabled>⏹ Stop Recording</button>
+    </div>
+
+    <p id="status">Camera is not running.</p>
+
+</div>
+
+<script>
+    const video = document.getElementById("inputVideo");
+    const canvas = document.getElementById("outputCanvas");
+    const ctx = canvas.getContext("2d");
+
+    const startCameraBtn = document.getElementById("startCamera");
+    const startRecordingBtn = document.getElementById("startRecording");
+    const stopRecordingBtn = document.getElementById("stopRecording");
+    const statusText = document.getElementById("status");
+
+    let camera = null;
+    let mediaRecorder = null;
+    let recordedChunks = [];
+    let cameraStream = null;
+    let handTrackingReady = false;
+
+    // Initialize MediaPipe Hands
+    const hands = new Hands({
+        locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }
+    });
+
+    hands.setOptions({
+        maxNumHands: 2,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.6,
+        minTrackingConfidence: 0.6
+    });
+
+    // Detect hands and draw landmarks
+    hands.onResults((results) => {
+        ctx.save();
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // Display camera image
+        ctx.drawImage(
+            results.image,
+            0, 0,
+            canvas.width,
+            canvas.height
+        );
+
+        // Draw detected hands
+        if (results.multiHandLandmarks) {
+            for (const landmarks of results.multiHandLandmarks) {
+                drawConnectors(
+                    ctx,
+                    landmarks,
+                    HAND_CONNECTIONS,
+                    {
+                        color: "#00FF00",
+                        lineWidth: 4
+                    }
+                );
+
+                drawLandmarks(
+                    ctx,
+                    landmarks,
+                    {
+                        color: "#FF0000",
+                        lineWidth: 2,
+                        radius: 4
+                    }
+                );
+            }
+
+            statusText.textContent =
+                "Hand detected! Camera is running.";
+        } else {
+            statusText.textContent =
+                "Camera is running. Show your hand.";
+        }
+
+        ctx.restore();
+    });
+
+    // Start camera
+    startCameraBtn.addEventListener("click", async () => {
+        try {
+            startCameraBtn.disabled = true;
+            statusText.textContent = "Starting camera...";
+
+            cameraStream = await navigator.mediaDevices.getUserMedia({
+                video: {
+                    width: 640,
+                    height: 480
+                },
+                audio: false
+            });
+
+            video.srcObject = cameraStream;
+            await video.play();
+
+            camera = new Camera(video, {
+                onFrame: async () => {
+                    await hands.send({ image: video });
+                },
+                width: 640,
+                height: 480
+            });
+
+            await camera.start();
+
+            handTrackingReady = true;
+            startRecordingBtn.disabled = false;
+
+            statusText.textContent =
+                "Camera started. Show your hand!";
+
+        } catch (error) {
+            console.error(error);
+            statusText.textContent =
+                "Camera error: " + error.message;
+
+            startCameraBtn.disabled = false;
+        }
+    });
+
+    // Start recording the displayed canvas
+    startRecordingBtn.addEventListener("click", () => {
+        if (!handTrackingReady) {
+            alert("Please start the camera first.");
+            return;
+        }
+
+        if (!canvas.captureStream || !window.MediaRecorder) {
+            alert("Your browser does not support canvas video recording.");
+            return;
+        }
+
+        recordedChunks = [];
+
+        // Record the camera image WITH hand-tracking drawings
+        const canvasStream = canvas.captureStream(30);
+
+        let options = {};
+
+        if (MediaRecorder.isTypeSupported("video/webm;codecs=vp9")) {
+            options.mimeType = "video/webm;codecs=vp9";
+        } else if (MediaRecorder.isTypeSupported("video/webm;codecs=vp8")) {
+            options.mimeType = "video/webm;codecs=vp8";
+        }
+
+        try {
+            mediaRecorder = new MediaRecorder(canvasStream, options);
+        } catch (error) {
+            statusText.textContent =
+                "Recording could not start: " + error.message;
+            return;
+        }
+
+        mediaRecorder.ondataavailable = (event) => {
+            if (event.data.size > 0) {
+                recordedChunks.push(event.data);
+            }
+        };
+
+        mediaRecorder.onstop = () => {
+            const blob = new Blob(recordedChunks, {
+                type: mediaRecorder.mimeType || "video/webm"
+            });
+
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+
+            link.href = url;
+            link.download = "hand_tracking_recording.webm";
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+            statusText.textContent =
+                "Recording saved! Check your Downloads folder.";
+        };
+
+        mediaRecorder.start();
+
+        startRecordingBtn.disabled = true;
+        stopRecordingBtn.disabled = false;
+
+        statusText.textContent = "🔴 Recording hand movements...";
+    });
+
+    // Stop recording and download video
+    stopRecordingBtn.addEventListener("click", () => {
+        if (mediaRecorder && mediaRecorder.state === "recording") {
+            mediaRecorder.stop();
+
+            startRecordingBtn.disabled = false;
+            stopRecordingBtn.disabled = true;
+        }
+    });
+</script>
+
+</body>
+</html>
+
+
